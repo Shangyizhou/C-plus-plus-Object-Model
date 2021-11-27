@@ -1,0 +1,385 @@
+## **分析**obj与构造函数语义
+
+我们知道，编译器有时会帮助我们合成一个`合成默认构造函数`。一般说的是，我们不做任何行为时（不创建自己的构造函数），编译器会帮我们合成一个合成默认构造函数。
+
+**结论**
+
+这种`合成默认构造函数`只会在某种必要的时候，编译器才会合成，而不是必须合成的，下面我们就来探索这些必要的情况
+
+## 环境搭建
+
+```c++
+#include <iostream>
+using namespace std;
+
+class MATX
+{
+public:
+	MATX() {
+		cout << "goodHAHAHA" << endl;
+	}
+};
+
+class MBTX
+{
+public:
+	int m_i;
+	int m_j;
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+}
+```
+
+我们需要得到一个可执行文件，需要经过编译链接，我们需要探究编译器在这期间做了什么，所以需要分析编译器生成的文件，在Linux下就是`.o`文件，我们在`windows`的环境下进行，需要找到编译器生成的`.obj`文件
+
+在`Microsoft Visual Studio`环境下进行，我们先生成解决方案，这个时候如果成功则可以在文件里找到`.obj`文件。但这时我们却无法很好的看到里面的信息，我们需要用`dumpbin`命令并将这个文件并重定向到一个`.txt`的新文件中
+
+![image-20211126124950320](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126124950320.png)
+
+<img src="https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126124955595.png" alt="image-20211126124955595" style="zoom:67%;" />
+
+这个命令没有设置好环境变量，我在文件夹里找到这个文件直接拖入了`windows cmd`命令行中，显示环境变量初始化成功，之后就可以直接使用了
+
+```C
+E:\study\computer_source\Visiual Studio\C++ 对象模型\Project1\Debug>"D:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars32.bat"
+**********************************************************************
+** Visual Studio 2019 Developer Command Prompt v16.8.4
+** Copyright (c) 2020 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x86'
+```
+
+```C
+dumpbin /all MyProject.obj > MyProject.txt
+```
+
+得到`MyProject.txt`文件
+
+我们打开查看得到
+
+![image-20211126125307173](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126125307173.png)
+
+我们`Ctrl + F`查找字符串，查找`MBTX::MBTX`，但是显示没有查找到，说明编译器并没有为我们合成`合成默认构造函数`
+
+## 编译器生成合成默认构造函数的情况
+
+### 情况一
+
+- 如果该类没有任何构造函数，例如上面的MBTX类没有任何构造函数
+- 但该类包含一个类类型的成员变量，在MBTX类中增加一个public修饰的MATX类型的成员变量
+- 而增添的成员变量所属的类有一个默认构造函数
+
+```C
+#include <iostream>
+using namespace std;
+
+class MATX
+{
+public:
+	// MATX有一个默认构造函数
+	MATX() { 
+		cout << "goodHAHAHA" << endl;
+	}
+};
+
+class MBTX
+{
+public:
+	int m_i;
+	int m_j;
+	MATX ma; // MATX类类型成员
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+
+	return 0;
+}
+```
+
+![image-20211126131349103](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126131349103.png)
+
+**可以进一步增设一个MOTX类**
+
+```C
+#include <iostream>
+using namespace std;
+
+class MATX
+{
+public:
+	// MATX有一个默认构造函数
+	MATX() { 
+		cout << "goodHAHAHA" << endl;
+	}
+};
+
+class MOTX
+{
+public:
+    // MOTX有一个默认构造函数
+	MOTX() {
+		cout << "Ogood!" << endl;
+	}
+};
+class MBTX
+{
+public:
+	int m_i;
+	int m_j;
+	MATX ma; // MATX类类型成员
+	MOTX mo; // MOTX类类型成员
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+
+	return 0;
+}
+```
+
+![image-20211126131734149](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126131734149.png)
+
+可以看到，`MBTX::MBTX`的合成默认构造函数先调用了`MATX::MATX`的默认构造函数，然后调用了`MOTX::MOTX`的默认构造函数。这是一因为成员变量`ma`定义在成员变量`mo`前面。
+
+### 情况二
+
+- 父类带有默认构造函数
+- 子类没有任何构造函数
+
+创建一个子类对象时，会先调用父类的默认构造函数，所以编译器会为该子类生成一个`合成默认构造函数`，**用于向其中安插代码来调用父类的默认构造函数**
+
+```C
+#include <iostream>
+using namespace std;
+
+class MBTXPARENT
+{
+public:
+	// MBTXPARENT有一个默认构造函数
+	MBTXPARENT() {
+		cout << "MBTXPARENT()构造函数执行" << endl;
+	}
+};
+
+
+class MBTX : public MBTXPARENT
+{
+public:
+	int m_i;
+	int m_j;
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+
+	return 0;
+}
+```
+
+![image-20211126132337881](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126132337881.png)
+
+可以看到`MBTX::MBTX`的合成默认构造函数先调用了`MBTXPARENT::MBTXPARENT`的默认构造函数
+
+### 情况三
+
+- 一个类含有虚函数
+- 该类没有任何构造函数
+
+```C
+#include <iostream>
+using namespace std;
+
+
+class MBTX
+{
+public:
+	int m_i;
+	int m_j;
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+
+	virtual void mvirfunc() {
+		cout << "mvirfunc" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+
+	return 0;
+}
+```
+
+![image-20211126134617729](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126134617729.png)
+
+因为类`MBTX`中虚函数的存在，编译器会为该类生成一个虚函数表，里面记录各种虚函数的首地址。同时也是因为虚函数的存在，编译器会为`MBTX`类生成了`合成默认构造函数`
+
+编译器同时为这个合成默认构造函数安插了代码，代码是一个赋值语句，用于把类`MBTX`的虚函数表地址赋给类对象的虚函数表指针。（虚函数表指针可以看作隐藏的成员对象）
+
+**如果我们再在此基础上增加一个父类**
+
+```c++
+#include <iostream>
+using namespace std;
+
+class MBTXPARENT
+{
+public:
+	// MBTXPARENT有一个默认构造函数
+	MBTXPARENT() {
+		cout << "MBTXPARENT()构造函数执行" << endl;
+	}
+};
+
+class MBTX : public MBTXPARENT
+{
+public:
+	int m_i;
+	int m_j;
+
+	// 默认构造函数
+	MBTX() {
+		m_i = 15;
+	}
+
+	void funct() {
+		cout << "I am very good" << endl;
+	}
+
+	// 虚函数
+	virtual void mvirfunc() {
+		cout << "mvirfunc" << endl;
+	}
+};
+
+int main()
+{
+	MBTX myb;
+
+	return 0;
+}
+```
+
+![image-20211126153117360](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126153117360.png)
+
+虚函数的存在让编译器为`MBTX`类生成一个虚函数表，然后编译器往`MBTX`默认构造函数安插了代码，这些代码做了这些事情
+
+- 调用了父类构造函数`MBTXPARENT::MBTXPARENT`
+- 因为`MBTXPARENT`类中有虚函数存在，把`MBTX`类的虚函数表地址赋给了类对象的虚函数表指针
+
+我们可以通过反汇编查看`m_i = 15`的语句
+
+![image-20211126155149658](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126155149658.png)
+
+**结论**
+
+程序员书写了自己的默认构造函数时，编译器会根据需要扩充该构造函数，向其中安插必要的带啊吗
+
+### 情况四
+
+- 如果一个类带有虚基类，编译器也会为它生成一个`合成默认构造函数`
+
+![image-20211126161459226](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126161459226.png)
+
+上面是要戒备的情况，会发生菱形继承。正常情况下，派生类会包含父类的对象，按这样继承，C类就会重复包含Grand类的对象，这样不但多余，而且可能产生名字冲突等问题`C->A->Grand::m_grand`和`C->B->Grand::m_grand`，这种访问编译器会报错，因为访问不明确。
+
+为此，我们引入了`虚基类`的概念，无论`Grand`类在继承体系中出现多少次，在派生类C中对象都只包含唯一一个`Grand类`子对象内容。
+
+```C
+#include <iostream>
+using namespace std;
+
+class Grand
+{
+public:
+};
+
+class A : virtual public Grand //虚继承
+{
+public:
+};
+
+class B : virtual public Grand //虚继承
+{
+public:
+};
+
+class C : public A, public B //这里直接继承
+{
+public:
+};
+
+int main()
+{
+	C c;
+
+	return 0;
+}
+```
+
+**编译器为类C生成了合成默认构造函数**
+
+![image-20211126164044231](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126164044231.png)
+
+我们可以查看到`C::C`,`A::A `,`B::B`，之前是`vftable,虚函数表`，现在是`vbtable，虚基类表`，这种虚基类结构，编译器会为子类和父类都生成`合成默认构造函数`
+
+**编译器为A生成了合成默认构造函数**
+
+![image-20211126164404621](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126164404621.png)
+
+**编译器为B生成了合成默认构造函数**
+
+![image-20211126164410122](https://syz-picture.oss-cn-shenzhen.aliyuncs.com/image-20211126164410122.png)
+
+### 情况五
+
+- 如果在定义成员变量的时候赋初值，C++11支持的语法
+
+```C
+#include <iostream>
+using namespace std;
+
+class Time
+{
+public:
+	int Second{ 0 };
+};
+
+int main()
+{
+	Time mytime;
+
+	return 0;
+}
+```
+
+## 参考
+
+- [(157条消息) DUMPBIN命令使用详解_youhonghao的博客-CSDN博客_dumpbin不是内部或外部命令](https://blog.csdn.net/youhonghao/article/details/81484554?ops_request_misc=&request_id=&biz_id=102&utm_term='dumpbin' 不是内部或外部命令，也不是可运行的程序 &utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-2-81484554.pc_search_result_control_group&spm=1018.2226.3001.4187)
+
